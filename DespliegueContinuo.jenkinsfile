@@ -1,0 +1,83 @@
+pipeline {
+    agent any
+//    agent {
+//        docker { image 'node:16.13.1-alpine' }
+//    }
+    environment {
+        REGISTRY = 'jamarton/mock-web-server'
+        DOCKERHUB_CREDENTIALS = credentials('DockerHub')
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                // Get Github repo using Github credentials (previously added to Jenkins credentials)
+                git url: 'https://github.com/jmagit/MOCKWebServer'
+            }
+        }
+        stage('Install dependencies') {
+            steps {
+                sh 'npm --version'
+                sh "npm install"
+            }
+        }
+        stage('Unit tests') {
+            steps {
+                // echo 'Run unit tests'
+                sh "npm run test"
+            }
+        }
+        stage("SonarQube Analysis") {
+            environment {
+                // Previously defined in the Jenkins "Global Tool Configuration"
+                scannerHome = tool 'SonarQube Scanner'
+            }
+            steps {
+                withSonarQubeEnv('SonarQubeDockerServer') {
+                    sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=MOCKWebServer \
+                    	-Dsonar.sources=./src \
+                    	-Dsonar.tests=./spec \
+                    	-Dsonar.javascript.lcov.reportPaths=./coverage/lcov.info"
+                }
+                timeout(2) { // time: 5 unit: 'MINUTES'
+                    // In case of SonarQube failure or direct timeout exceed, stop Pipeline
+                    // waitForQualityGate abortPipeline: waitForQualityGate().status != 'OK'
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        stage("Quality Gate") {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    // Parameter indicates whether to set pipeline to UNSTABLE if Quality Gate fails
+                    // true = set pipeline to UNSTABLE, false = don't
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        stage('Build Docker image') {
+            steps {
+                sh "docker build -t ${REGISTRY}:${BUILD_NUMBER} . "
+            }
+        }
+        stage('Login Docker Hub') {
+            steps {
+                sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+            }
+        }
+        stage('Scan Docker image vulnerabilities') {
+            steps {
+                //sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+               // sh "docker scan --accept-license ${REGISTRY}:${BUILD_NUMBER}"
+                echo 'docker scan'
+            }
+        }
+        stage('Deploy Docker image') {
+            steps {
+                // If the Dockerhub authentication stopped, do it again
+                //sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+                sh "docker push ${REGISTRY}:${BUILD_NUMBER}"
+                echo 'docker push'
+            }
+        }
+    }
+}
